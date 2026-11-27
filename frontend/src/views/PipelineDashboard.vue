@@ -103,6 +103,67 @@
         </div>
       </div>
 
+      <!-- 下方：锅温日志与接料 -->
+      <div class="panel pan-panel">
+        <h3>锅温日志与揉捻接料</h3>
+        <div class="pan-summary">
+          <span class="pan-mode" :class="panState?.mode">
+            当前口径：{{ panState?.mode === 'legacy' ? '旧版锅温设定（回滚中）' : '新版锅温日志' }}
+          </span>
+          <span>锅温日志 {{ panState?.logs ?? 0 }} 条（含迁移旧来源 {{ panState?.legacy_logs ?? 0 }} 条）</span>
+          <span>有效接料证明 {{ panState?.proofs ?? 0 }} 份</span>
+          <span>已接料 {{ panState?.receipts ?? 0 }} 锅</span>
+          <button class="btn" type="button" @click="doLoadPan">刷新</button>
+        </div>
+        <div v-if="pendingReceiving.length" class="pending-list">
+          <h4>待接料锅（未办成的旧记录仍可继续查）</h4>
+          <div v-for="item in pendingReceiving" :key="item.锅号" class="pending-row">
+            <strong>{{ item.锅号 }}</strong>
+            <span>杀青记录 #{{ item.杀青记录ID }}</span>
+            <span>出料 {{ item.出料重量 || '—' }}kg</span>
+            <span class="pending-note">{{ item.核对?.说明 || '—' }}</span>
+          </div>
+        </div>
+        <div v-else class="gate-empty">暂无待接料锅</div>
+        <div class="pan-actions">
+          <label class="pan-pot">
+            锅号
+            <input v-model="proofPot" placeholder="如 FIXING#3 或 POT-A" />
+          </label>
+          <button class="btn" type="button" @click="doLoadProof">查锅温证明</button>
+          <button class="btn" type="button" @click="doQueryLegacy">旧口径回查</button>
+          <button class="btn ghost" type="button" @click="doSwitchMode(panState?.mode === 'legacy' ? 'new' : 'legacy')">
+            {{ panState?.mode === 'legacy' ? '切回新版' : '回滚旧版' }}
+          </button>
+        </div>
+        <div v-if="proofView" class="proof-view">
+          <div class="proof-title">锅号 {{ proofView.锅号 }} 核对结论</div>
+          <p class="proof-desc">{{ proofView.核对?.说明 || '—' }}</p>
+          <p class="proof-desc">
+            原旧凭据继续受理：{{ proofView.核对?.原旧凭据继续受理 ? '是' : '否' }} ｜
+            需确认刚来的锅温日志：{{ proofView.核对?.需要确认刚来的锅温日志 ? '是' : '否' }} ｜
+            实际采用：{{ proofView.核对?.实际采用 || '—' }}
+          </p>
+          <div v-for="(source, idx) in proofView.告知来源" :key="idx" class="source-row">
+            <span>{{ source.来源 }}</span>
+            <span>{{ source.日志编号 }}</span>
+            <span>{{ source.来源 === '旧锅温设定' ? source.锅温设定 : source.实测锅温 + '℃' }}</span>
+            <span>{{ source.测温时间 || '无测量时间' }}</span>
+            <span>{{ source.口径 }}</span>
+          </div>
+        </div>
+        <div v-if="legacyView" class="proof-view">
+          <div class="proof-title">旧口径回查（已确认锅温设定 / 出料重量）</div>
+          <div v-for="item in legacyView" :key="item.id" class="source-row">
+            <span>#{{ item.id }} {{ item.锅号 }}</span>
+            <span>设定 {{ item.锅温设定 }}</span>
+            <span>出料 {{ item.出料重量 || '—' }}</span>
+            <span>{{ item.口径 }} · 非实测</span>
+          </div>
+        </div>
+        <div v-if="panMessage" class="result-msg success">{{ panMessage }}</div>
+      </div>
+
       <!-- 追溯链展示 -->
       <div class="panel trace-panel" v-if="traceData">
         <h3>批次 {{ traceData.batch_no }} 追溯链 ({{ traceData.chain_length }} 步)</h3>
@@ -146,13 +207,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import {
   advanceBatch,
   checkGate,
   checkWeightConservation,
   fetchTraceChain,
+  fetchPanProof,
+  fetchPanState,
+  fetchPendingReceiving,
+  fetchLegacyQuery,
 } from '@/api/pipeline-client'
+import { request } from '@/api/client'
 
 const batchNo = ref('')
 const currentModule = ref('picking')
@@ -235,6 +301,67 @@ async function doTrace() {
     advanceMsg.value = err.message || '追溯链查询失败'
   }
 }
+
+// ── 锅温日志与接料 ──
+const panState = ref<any>(null)
+const pendingReceiving = ref<any[]>([])
+const proofPot = ref('')
+const proofView = ref<any>(null)
+const legacyView = ref<any[] | null>(null)
+const panMessage = ref('')
+
+async function doLoadPan() {
+  panMessage.value = ''
+  try {
+    panState.value = await fetchPanState()
+    pendingReceiving.value = (await fetchPendingReceiving()).items
+  } catch (err: any) {
+    panMessage.value = err.message || '锅温状态读取失败'
+  }
+}
+
+async function doLoadProof() {
+  panMessage.value = ''
+  if (!proofPot.value.trim()) {
+    panMessage.value = '请先输入锅号'
+    return
+  }
+  try {
+    proofView.value = await fetchPanProof(proofPot.value.trim())
+    legacyView.value = null
+  } catch (err: any) {
+    panMessage.value = err.message || '锅温证明查询失败'
+  }
+  await doLoadPan()
+}
+
+async function doQueryLegacy() {
+  panMessage.value = ''
+  try {
+    legacyView.value = (await fetchLegacyQuery()).items
+    proofView.value = null
+  } catch (err: any) {
+    panMessage.value = err.message || '旧口径回查失败'
+  }
+}
+
+async function doSwitchMode(mode: string) {
+  panMessage.value = ''
+  try {
+    const response = await request('/api/pan/mode', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    })
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) throw new Error(payload.detail || '口径切换失败')
+    panMessage.value = payload.message
+  } catch (err: any) {
+    panMessage.value = err.message || '口径切换失败'
+  }
+  await doLoadPan()
+}
+
+onMounted(doLoadPan)
 </script>
 
 <style scoped>
@@ -523,6 +650,67 @@ async function doTrace() {
   font-size: 13px;
   font-weight: 500;
   margin-top: 8px;
+}
+
+.pan-panel {
+  grid-column: 1 / -1;
+}
+.pan-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 12px;
+}
+.pan-mode {
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-weight: 500;
+  background: #d4edda;
+  color: #155724;
+}
+.pan-mode.legacy {
+  background: #fff3cd;
+  color: #856404;
+}
+.pending-list h4 { font-size: 13px; margin: 8px 0; color: #2c3e50; }
+.pending-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 6px 8px;
+  background: #f8f9fa;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.pending-note { color: #856404; }
+.pan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0;
+}
+.pan-pot { font-size: 12px; color: #666; display: flex; align-items: center; gap: 6px; }
+.pan-pot input {
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.proof-view { margin-top: 8px; padding: 10px; background: #f3f8ff; border-radius: 4px; }
+.proof-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.proof-desc { font-size: 12px; color: #555; margin: 2px 0; }
+.source-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-bottom: 1px dashed #e0e0e0;
 }
 
 .process-flow {

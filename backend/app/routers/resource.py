@@ -94,5 +94,20 @@ def create_entry(module: str, payload: EntryPayload) -> ActionResult:
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)
 def run_action(module: str, entry_id: int, payload: ActionPayload) -> ActionResult:
     service = require_service(module)
-    entry, message = service.run_action(entry_id, payload.action.strip())
+    action = payload.action.strip()
+    # 揉捻接料不是普通状态流转：查该锅唯一有效证明再办理，重复办理不重复扣料。
+    if module == "rolling" and action in ("完成接料", "接料"):
+        receipt, message = service.receive(entry_id)
+        return ActionResult(ok=receipt is not None, message=message, entry=receipt)
+    entry, message = service.run_action(entry_id, action)
     return ActionResult(ok=entry is not None, message=message, entry=entry)
+
+
+@router.get("/rolling/{entry_id}/receiving-proof", response_model=dict)
+def get_rolling_receiving_proof(entry_id: int) -> dict[str, Any]:
+    """揉捻工位查询接料证明（必须定义在 /{module}/{entry_id} 之前才会生效）。"""
+    service = require_service("rolling")
+    plan = service.receive_plan(entry_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"揉捻记录 {entry_id} 不存在")
+    return plan

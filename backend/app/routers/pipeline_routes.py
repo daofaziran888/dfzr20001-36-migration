@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from app.services.pipeline import pipeline
@@ -26,16 +26,9 @@ def advance_batch(
     current_module: str = Query(...),
     current_entry_id: int = Query(...),
     request_id: str = Query(default=""),
-    values: dict[str, Any] | None = None,
+    values: dict[str, Any] | None = Body(default=None),
 ) -> dict[str, Any]:
     """将指定批次从当前工序推进到下一道工序。"""
-    import json
-    from fastapi import Body, Request
-    try:
-        from fastapi import Body
-    except:
-        pass
-
     return _advance_impl(batch_no, current_module, current_entry_id, request_id, values)
 
 

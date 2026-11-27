@@ -24,8 +24,27 @@ class Store:
         self._idempotency: dict[str, dict[str, Any]] = {}
         # 冻结标记：被不合格处置关联的记录 id -> True
         self._frozen: dict[tuple[str, int], str] = {}
+        # 锅温日志 / 接料凭据领域状态。
+        # 旧环境只有单个「锅温设定」；升级后设备按实际测量时间上报「锅温日志」。
+        # 这些结构独立于业务表，避免把旧设定行改写成实测数据。
+        self.pan_legacy_logs: list[dict[str, Any]] = []   # 由旧记录迁移出的告知来源
+        self.pan_logs: list[dict[str, Any]] = []          # 设备/新格式锅温日志
+        self.pan_proofs: list[dict[str, Any]] = []        # 每锅至多一份「有效」接料证明
+        self.pan_receipts: list[dict[str, Any]] = []      # 已接料凭据快照（回滚后保留）
+        self.pan_state: dict[str, Any] = {
+            "mode": "new",            # new / legacy：部署切换与回滚开关
+            "rollback_at": None,
+            "seq": {"log": 0, "proof": 0, "receipt": 0},
+        }
         # 初始化建种子血缘索引
         self._build_lineage_from_seed()
+
+    # ── 锅温日志序号 ──
+
+    def next_pan_id(self, kind: str) -> int:
+        seq = self.pan_state["seq"]
+        seq[kind] = int(seq.get(kind, 0)) + 1
+        return int(seq[kind])
 
     # ── 表操作 ──
 

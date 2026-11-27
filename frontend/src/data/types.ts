@@ -18,6 +18,8 @@ export type ModuleMeta = {
   actions: string[]
   actionTargets: Record<string, string>
   metrics: string[]
+  /** 登记弹窗里允许为空的字段（锅温设定/锅温日志二选一等） */
+  optionalFields?: string[]
 }
 
 export type PageResult = {

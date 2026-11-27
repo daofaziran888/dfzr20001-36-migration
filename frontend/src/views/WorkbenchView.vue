@@ -100,6 +100,22 @@
               @click="viewUpstream(row)" title="查看上游工序">
               查看上游
             </button>
+            <button
+              v-if="meta.key === 'rolling'"
+              class="link proof-link"
+              data-testid="receiving-proof"
+              type="button"
+              @click="openRollingProof(row)" title="查锅温接料证明">
+              接料证明
+            </button>
+            <button
+              v-if="meta.key === 'fixing'"
+              class="link proof-link"
+              data-testid="fixing-proof"
+              type="button"
+              @click="openFixingProof(row)" title="查看锅温告知来源">
+              锅温证明
+            </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -110,12 +126,82 @@
       </tbody>
     </table>
 
+    <!-- 锅温 / 接料证明面板：旧口径与新日志两种告知来源都在这里核对 -->
+    <div v-if="proofPanel" class="proof-panel" data-testid="proof-panel">
+      <div class="proof-head">
+        <h4>{{ proofPanel.title }} · 锅号 {{ proofPanel.pot }}</h4>
+        <button class="btn ghost" type="button" @click="proofPanel = null">关闭</button>
+      </div>
+      <div v-if="proofPanel.loading">加载中...</div>
+      <div v-else-if="proofPanel.error" class="error-text">{{ proofPanel.error }}</div>
+      <div v-else class="proof-body">
+        <p class="proof-note">{{ proofPanel.plan.核对?.说明 || '—' }}</p>
+        <div class="proof-tags">
+          <span class="proof-tag" :class="proofPanel.plan.核对?.原旧凭据继续受理 ? 'ok' : 'muted'">
+            原旧凭据继续受理：{{ proofPanel.plan.核对?.原旧凭据继续受理 ? '是' : '否' }}
+          </span>
+          <span class="proof-tag" :class="proofPanel.plan.核对?.需要确认刚来的锅温日志 ? 'warn' : 'muted'">
+            需确认刚来的锅温日志：{{ proofPanel.plan.核对?.需要确认刚来的锅温日志 ? '是' : '否' }}
+          </span>
+          <span class="proof-tag" :class="proofPanel.plan.核对?.实际采用 ? 'ok' : 'muted'">
+            实际采用：{{ proofPanel.plan.核对?.实际采用 || '—' }}
+          </span>
+        </div>
+        <table class="mini-table">
+          <thead>
+            <tr>
+              <th>来源</th><th>日志编号</th><th>温度</th><th>测量时间</th><th>口径</th><th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(source, idx) in proofPanel.plan.告知来源" :key="idx">
+              <td>{{ source.来源 }}</td>
+              <td>{{ source.日志编号 }}</td>
+              <td>{{ source.来源 === '旧锅温设定' ? (source.锅温设定 ?? '—') : (source.实测锅温 ?? '—') }}</td>
+              <td>{{ source.测温时间 || '—' }}</td>
+              <td>{{ source.口径 }}</td>
+              <td>
+                <span v-if="source.来源 === '旧锅温设定'">{{ source.可受理 ? '可受理' : '待确认/不可受理' }}</span>
+                <span v-else>{{ source.状态 }}{{ source.有测量时间 ? '' : '（缺测量时间）' }}</span>
+              </td>
+            </tr>
+            <tr v-if="!proofPanel.plan.告知来源?.length">
+              <td colspan="6" class="empty-state">该锅还没有任何锅温告知来源</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="proof-proof">
+          <span v-if="proofPanel.plan.有效证明">
+            有效接料证明：{{ proofPanel.plan.有效证明['证明编号'] }}
+            （{{ proofPanel.plan.有效证明['凭据版本'] }}
+            <template v-if="proofPanel.plan.有效证明['实测']">，实测 {{ proofPanel.plan.有效证明['温度'] }}℃</template>
+            ）
+          </span>
+          <span v-else>尚未形成有效接料证明</span>
+        </div>
+        <div v-if="proofPanel.rollingId" class="page-actions">
+          <button
+            class="btn primary"
+            data-testid="receive-confirm"
+            type="button"
+            :disabled="proofPanel.receiving || !!proofPanel.plan.已接料"
+            @click="confirmReceive"
+          >
+            {{ proofPanel.plan.已接料 ? '已接料' : '完成接料' }}
+          </button>
+          <span class="proof-note">
+            已办成接料：{{ proofPanel.plan.已接料 ? proofPanel.plan.已接料['凭据编号'] + '（' + proofPanel.plan.已接料['凭据版本'] + '）' : '—' }}
+          </span>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showCreate" class="modal-backdrop" data-testid="create-modal">
       <form class="modal" @submit.prevent="submitCreate">
         <h3>登记{{ meta.entity }}</h3>
         <label v-for="field in meta.fields" :key="field" class="create-field">
-          <span>{{ field }}</span>
-          <input v-model="createValues[field]" :data-testid="`create-${field}`" required />
+          <span>{{ field }}<em v-if="meta.optionalFields?.includes(field)">（可空）</em></span>
+          <input v-model="createValues[field]" :data-testid="`create-${field}`" :required="!meta.optionalFields?.includes(field)" />
         </label>
         <div class="page-actions">
           <button class="btn" type="button" @click="showCreate = false">取消</button>
@@ -144,7 +230,8 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/backend-service'
-import { fetchTraceChain } from '@/api/pipeline-client'
+import { emptyPlan, fetchTraceChain, fetchPanProof, fetchReceivingPlan, receiveRolling } from '@/api/pipeline-client'
+import type { ReceivingPlan } from '@/api/pipeline-client'
 import type { EntryRow } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
@@ -211,6 +298,9 @@ async function exportRows() {
 
 function openCreate() {
   createValues.value = Object.fromEntries(meta.fields.map((field) => [field, '']))
+  // 新口径杀青只填锅温日志，旧口径才填锅温设定；两种来源都不强制二选一必填。
+  if (meta.key === 'fixing') createValues.value['锅温设定'] = ''
+  if (meta.key === 'rolling') createValues.value['锅号'] = ''
   errorMessage.value = ''
   showCreate.value = true
 }
@@ -235,9 +325,84 @@ async function runAction(action: string, row: EntryRow) {
   try {
     const result = await applyAction(meta.key, Number(row.id), action)
     if (!result.ok) throw new Error(result.message)
+    if (meta.key === 'rolling' && proofPanel.value) {
+      await loadRollingProof(Number(row.id))
+    }
     await reload()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '操作失败'
+  }
+}
+
+// ── 锅温日志 / 接料证明 ──
+const proofPanel = ref<null | {
+  title: string
+  pot: string
+  rollingId?: number
+  loading: boolean
+  receiving: boolean
+  error: string
+  plan: ReceivingPlan
+}>(null)
+
+function potOfFixing(row: EntryRow): string {
+  return String(row['锅号'] || `FIXING#${row.id}`)
+}
+
+async function openFixingProof(row: EntryRow) {
+  const pot = potOfFixing(row)
+  proofPanel.value = {
+    title: '杀青锅温告知来源', pot, loading: true, receiving: false, error: '',
+    plan: emptyPlan(pot),
+  }
+  try {
+    proofPanel.value.plan = await fetchPanProof(pot)
+  } catch (error) {
+    proofPanel.value.error = error instanceof Error ? error.message : '锅温证明查询失败'
+  } finally {
+    if (proofPanel.value) proofPanel.value.loading = false
+  }
+}
+
+async function loadRollingProof(rollingId: number) {
+  try {
+    const plan = await fetchReceivingPlan(rollingId)
+    if (proofPanel.value) {
+      proofPanel.value.plan = plan
+      proofPanel.value.pot = plan.锅号
+    }
+  } catch (error) {
+    if (proofPanel.value) {
+      proofPanel.value.error = error instanceof Error ? error.message : '接料证明查询失败'
+    }
+  }
+}
+
+async function openRollingProof(row: EntryRow) {
+  const rollingId = Number(row.id)
+  const pot = String(row['锅号'] || '')
+  proofPanel.value = {
+    title: '揉捻接料证明', pot, rollingId, loading: true, receiving: false, error: '',
+    plan: { ...emptyPlan(pot), 揉捻记录ID: rollingId, 已接料: null },
+  }
+  await loadRollingProof(rollingId)
+  if (proofPanel.value) proofPanel.value.loading = false
+}
+
+async function confirmReceive() {
+  if (!proofPanel.value?.rollingId) return
+  proofPanel.value.receiving = true
+  errorMessage.value = ''
+  try {
+    const result = await receiveRolling(proofPanel.value.rollingId)
+    await loadRollingProof(proofPanel.value.rollingId)
+    await reload()
+    if (!result.ok) throw new Error(result.message)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '接料失败'
+    if (proofPanel.value) await loadRollingProof(proofPanel.value.rollingId)
+  } finally {
+    if (proofPanel.value) proofPanel.value.receiving = false
   }
 }
 
@@ -252,8 +417,7 @@ async function reload() {
   }
 }
 
-async function viewBatchTrace(batchNo: string) {
-  traceBatchNo.value = batchNo
+async function viewBatchTrace(batchNo: string) {  traceBatchNo.value = batchNo
   showTrace.value = true
   traceLoading.value = true
   traceError.value = ''
@@ -358,7 +522,7 @@ onMounted(reload)
   margin: 0 2px;
   padding-top: 8px;
 }
-.trace-link, .upstream-link {
+.trace-link, .upstream-link, .proof-link {
   color: #27ae60 !important;
   margin-left: 6px;
   padding: 2px 6px;
@@ -368,8 +532,39 @@ onMounted(reload)
   text-decoration: none;
   cursor: pointer;
 }
-.trace-link:hover, .upstream-link:hover {
+.trace-link:hover, .upstream-link:hover, .proof-link:hover {
   background: #27ae60;
   color: white !important;
 }
+.proof-panel {
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  background: #fffaf0;
+  border-radius: 6px;
+  border-left: 3px solid #e67e22;
+}
+.proof-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.proof-head h4 { margin: 0; font-size: 14px; color: #2c3e50; }
+.proof-body { font-size: 12px; color: #444; }
+.proof-note { margin: 6px 0; color: #856404; }
+.proof-tags { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.proof-tag {
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: #eee;
+}
+.proof-tag.ok { background: #d4edda; color: #155724; }
+.proof-tag.warn { background: #fff3cd; color: #856404; }
+.proof-tag.muted { background: #eceff1; color: #607d8b; }
+.mini-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 11px; }
+.mini-table th, .mini-table td { border: 1px solid #e0e0e0; padding: 4px 6px; text-align: left; }
+.mini-table th { background: #f5f5f5; }
+.proof-proof { margin: 8px 0; font-weight: 500; color: #2c3e50; }
+.proof-body .page-actions { display: flex; align-items: center; gap: 10px; }
 </style>
